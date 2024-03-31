@@ -1,195 +1,124 @@
-const Express = require('express');
-const CORS = require('cors');
-const UserModel = require('./models/UserSchema');
-const ExerciseModel = require('./models/ExerciseSchema');
-const LogModel = require('./models/LogSchema');
+const express = require('express');
+const app = express();
+const cors = require('cors');
 require('dotenv').config();
-require('./config/db.config').connectDB();
+const mongoose = require('mongoose');
+const { Schema } = mongoose;
 
-const App = Express();
+mongoose.connect(process.env.MONGODB);
 
-App.use(CORS());
-App.use(
-  Express.urlencoded({
-    extended: false,
-  })
-);
-App.use(Express.json());
-App.use(Express.static('public'));
+const UserSchema = new Schema({
+  username: String,
+});
+const User = mongoose.model('User', UserSchema);
 
-App.get('/', (req, res) => {
+const ExerciseSchema = new Schema({
+  user_id: { type: String, required: true },
+  description: String,
+  duration: Number,
+  date: Date,
+});
+const Exercise = mongoose.model('Exercise', ExerciseSchema);
+
+app.use(cors());
+app.use(express.static('public'));
+app.use(express.urlencoded({ extended: true }));
+app.get('/', (req, res) => {
   res.sendFile(__dirname + '/views/index.html');
 });
 
-// saving a user in the database
-App.post('/api/users', (req, res) => {
-  const user_obj = new UserModel({
+app.get('/api/users', async (req, res) => {
+  const users = await User.find({}).select('_id username');
+  if (!users) {
+    res.send('No users');
+  } else {
+    res.json(users);
+  }
+});
+
+app.post('/api/users', async (req, res) => {
+  console.log(req.body);
+  const userObj = new User({
     username: req.body.username,
   });
 
-  user_obj.save((err, new_user) => {
-    if (err) {
-      res.status(500).json({
-        error: err.message,
-      });
-    } else {
-      res.json(new_user);
-    }
-  });
+  try {
+    const user = await userObj.save();
+    console.log(user);
+    res.json(user);
+  } catch (err) {
+    console.log(err);
+  }
 });
 
-// get all users
-App.get('/api/users', (req, res) => {
-  UserModel.find((err, all_users) => {
-    if (err) {
-      res.status(500).json({
-        error: err.message,
-      });
+app.post('/api/users/:_id/exercises', async (req, res) => {
+  const id = req.params._id;
+  const { description, duration, date } = req.body;
+
+  try {
+    const user = await User.findById(id);
+    if (!user) {
+      res.send('Could not find user');
     } else {
-      res.json(all_users);
-    }
-  });
-});
-
-// save exercises for the specified user
-App.post('/api/users/:_id/exercises', (req, res) => {
-  const user_id = req.params._id;
-
-  UserModel.findById(user_id, (err, user) => {
-    if (err) {
-      res.status(404).send('User Not Found!');
-    } else {
-      let date_input;
-
-      if (req.body.date === '') {
-        date_input = new Date(Date.now());
-      } else {
-        date_input = new Date(req.body.date);
-      }
-
-      const exercise_obj = new ExerciseModel({
+      const exerciseObj = new Exercise({
         user_id: user._id,
-        username: user.username,
-        description: req.body.description,
-        duration: req.body.duration,
-        date: date_input,
+        description,
+        duration,
+        date: date ? new Date(date) : new Date(),
       });
-
-      exercise_obj.save((err, new_exercise) => {
-        if (err) {
-          res.status(500).json({
-            error: err.message,
-          });
-        } else {
-          LogModel.findById(new_exercise.user_id, (err, log) => {
-            if (err) {
-              res.status(500).json({
-                error: err.message,
-              });
-            }
-            if (log === null) {
-              let old_count = 0;
-
-              const log_obj = new LogModel({
-                _id: new_exercise.user_id,
-                username: new_exercise.username,
-                count: ++old_count,
-                log: [
-                  {
-                    description: new_exercise.description,
-                    duration: new_exercise.duration,
-                    date: new_exercise.date,
-                  },
-                ],
-              });
-
-              log_obj.save((err, new_log) => {
-                if (err) {
-                  res.status(400).send('Bad Request Cannot Create Log!');
-                }
-              });
-            } else {
-              ExerciseModel.find(
-                { user_id: new_exercise.user_id },
-                (err, docs) => {
-                  if (err) {
-                    res.status(500).json({
-                      error: err.message,
-                    });
-                  } else {
-                    const log_arr = docs.map((exerciseObj) => {
-                      return {
-                        description: exerciseObj.description,
-                        duration: exerciseObj.duration,
-                        date: exerciseObj.date,
-                      };
-                    });
-
-                    const new_count = log_arr.length;
-
-                    LogModel.findByIdAndUpdate(
-                      new_exercise.user_id,
-                      {
-                        count: new_count,
-                        log: log_arr,
-                      },
-                      (err, updated_log) => {
-                        if (err) {
-                          res
-                            .json(400)
-                            .send('Unable to Update Log. Bad Request');
-                        }
-                      }
-                    );
-                  }
-                }
-              );
-            }
-          });
-
-          res.json({
-            _id: new_exercise.user_id,
-            username: new_exercise.username,
-            description: new_exercise.description,
-            duration: new_exercise.duration,
-            date: new Date(new_exercise.date).toDateString(),
-          });
-        }
-      });
-    }
-  });
-});
-
-// access all logs of any user
-App.get('/api/users/:_id/logs', (req, res) => {
-  LogModel.findById(req.params._id, (err, user_log) => {
-    if (err) {
-      res.status(500).json({
-        error: err.message,
-      });
-    }
-    if (user_log === null) {
-      res.status(404).send('User Log Not Found!');
-    } else {
-      const log_obj = user_log.log.map((obj) => {
-        return {
-          description: obj.description,
-          duration: obj.duration,
-          date: new Date(obj.date).toDateString(),
-        };
-      });
-
+      const exercise = await exerciseObj.save();
       res.json({
-        _id: user_log._id,
-        username: user_log.username,
-        count: user_log.count,
-        log: log_obj,
+        _id: user._id,
+        username: user.username,
+        description: exercise.description,
+        duration: exercise.duration,
+        date: new Date(exercise.date).toDateString(),
       });
     }
+  } catch (err) {
+    console.log(err);
+    res.send('There was an error saving the exercise');
+  }
+});
+
+app.get('/api/users/:_id/logs', async (req, res) => {
+  const { from, to, limit } = req.query;
+  const id = req.params._id;
+  const user = await User.findById(id);
+  if (!user) {
+    res.send('Could not find user');
+    return;
+  }
+  let dateObj = {};
+  if (from) {
+    dateObj['$gte'] = new Date(from);
+  }
+  if (to) {
+    dateObj['$lte'] = new Date(to);
+  }
+  let filter = {
+    user_id: id,
+  };
+  if (from || to) {
+    filter.date = dateObj;
+  }
+
+  const exercises = await Exercise.find(filter).limit(+limit ?? 500);
+
+  const log = exercises.map((e) => ({
+    description: e.description,
+    duration: e.duration,
+    date: e.date.toDateString(),
+  }));
+
+  res.json({
+    username: user.username,
+    count: exercises.length,
+    _id: user._id,
+    log,
   });
 });
 
-const CONN_PORT = process.env.PORT;
-App.listen(CONN_PORT, () =>
-  console.log(`Your App is Listening at http://localhost:${CONN_PORT}`)
-);
+const listener = app.listen(process.env.PORT || 3000, () => {
+  console.log('Your app is listening on port ' + listener.address().port);
+});
